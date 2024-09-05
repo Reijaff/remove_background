@@ -49,9 +49,9 @@ class OPERATOR_OT_RemoveBackgroundOperator(bpy.types.Operator):
 
         # Create new strip in the temporary scene, copying properties from the original
         new_strip = new_scene.sequence_editor.sequences.new_movie(
-            name=strip.name, filepath=bpy.path.abspath(strip.directory + strip.name), channel=1, frame_start=1
-        ) if strip.type == "MOVIE" else new_scene.sequence_editor.sequences.new_image(
             name=strip.name, filepath=bpy.path.abspath(strip.filepath), channel=1, frame_start=1
+        ) if strip.type == "MOVIE" else new_scene.sequence_editor.sequences.new_image(
+            name=strip.name, filepath=bpy.path.abspath(strip.directory + strip.name), channel=1, frame_start=1
         )
 
         new_strip.frame_final_duration = strip.frame_final_duration
