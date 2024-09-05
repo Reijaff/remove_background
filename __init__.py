@@ -1,3 +1,12 @@
+import importlib.util
+import bpy
+import sys
+import subprocess
+from PIL import Image
+import site
+import requests
+import os
+
 bl_info = {
     "name": "Remove Background",
     "author": "tintwotin",
@@ -10,24 +19,13 @@ bl_info = {
     "category": "Sequencer",
 }
 
-
-import importlib.util
-import bpy, sys, subprocess, os
-from PIL import Image
-import site
-
 app_path = site.USER_SITE
+
 if app_path not in sys.path:
     sys.path.append(app_path)
-pybin = sys.executable
-try:
-    subprocess.call([pybin, "-m", "ensurepip"])
-except ImportError:
-    pass
-
 
 class OPERATOR_OT_RemoveBackgroundOperator(bpy.types.Operator):
-    """Remove the background from a VSE strip and import the resulting images as a new strip in the original scene"""
+    """Remove the background from a VSE strip and import the resulting images as a new strip."""
 
     bl_idname = "vse.remove_background"
     bl_label = "Remove Background"
@@ -35,115 +33,79 @@ class OPERATOR_OT_RemoveBackgroundOperator(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.space_data.type == "SEQUENCE_EDITOR"
+        return context.space_data.type == "SEQUENCE_EDITOR" and context.scene.sequence_editor.active_strip
 
     def execute(self, context):
-        # Get the VSE strip that you want to copy
         strip = context.scene.sequence_editor.active_strip
-        # bpy.ops.sequencer.select_all(action='DESELECT')
-        # strip.select = True
 
-        # Skip the strip if it's a sound strip
-        if strip.type == "SOUND":
-            self.report(
-                {"ERROR"}, "Can only remove background from movie or image strips"
-            )
+        if strip.type not in ("MOVIE", "IMAGE"):
+            self.report({"ERROR"}, "Can only remove background from movie or image strips")
             return {"CANCELLED"}
-        # Create a new scene and set it as the active scene
+
+        original_scene = context.scene
         new_scene = bpy.data.scenes.new("Export Scene")
         context.window.scene = new_scene
-
-        # Add a sequencer to the new scene
         new_scene.sequence_editor_create()
 
-        # Add the strip to the new scene
-        if strip.type == "MOVIE":
-            new_strip = new_scene.sequence_editor.sequences.new_movie(
-                name=strip.name,
-                filepath=bpy.path.abspath(strip.filepath),
-                channel=strip.channel,
-                frame_start=int(strip.frame_start),
-            )
-            new_strip.frame_final_start = int(strip.frame_final_start)
-            new_strip.frame_final_end = int(strip.frame_final_end)
-            new_strip.frame_offset_start = int(strip.frame_offset_start)
-            new_strip.frame_offset_end = int(strip.frame_offset_end)
-        elif strip.type == "IMAGE":
-            # Assume it's an image strip
-            new_strip = new_scene.sequence_editor.sequences.new_image(
-                name=strip.name,
-                filepath=bpy.path.abspath(strip.filepath),
-                channel=strip.channel,
-                frame_start=int(strip.frame_start),
-            )
-            new_strip.frame_final_start = int(strip.frame_final_start)
-            new_strip.frame_final_end = int(strip.frame_final_end)
-            new_strip.frame_offset_start = int(strip.frame_offset_start)
-            new_strip.frame_offset_end = int(strip.frame_offset_end)
-        else:
-            return {"CANCELLED"}
-        # Set the frame range for the new scene to match the strip
-        new_scene.frame_start = int(strip.frame_final_start)
-        new_scene.frame_end = int(strip.frame_final_end)
+        # Create new strip in the temporary scene, copying properties from the original
+        new_strip = new_scene.sequence_editor.sequences.new_movie(
+            name=strip.name, filepath=bpy.path.abspath(strip.filepath), channel=1, frame_start=1
+        ) if strip.type == "MOVIE" else new_scene.sequence_editor.sequences.new_image(
+            name=strip.name, filepath=bpy.path.abspath(strip.filepath), channel=1, frame_start=1
+        )
 
-        # Set the output settings for the scene
-        output_path = os.path.dirname(os.path.abspath(strip.filepath))
-        folder_name = os.path.basename(strip.filepath)
-        output_path = output_path + "/" + folder_name + "_image_sequence/"
-        context.scene.render.filepath = output_path
-        context.scene.render.image_settings.file_format = "PNG"
+        new_strip.frame_final_duration = strip.frame_final_duration
 
-        # Render the scene
-        msg = "Saving images to disk."
-        self.report({"INFO"}, msg)
-        bpy.ops.render.render(animation=True)
+        # Set output path for rendered frames
+        output_path = os.path.join(
+            os.path.dirname(bpy.path.abspath(strip.filepath)), 
+            f"{os.path.basename(strip.filepath)}_image_sequence/"
+        )
+        os.makedirs(output_path, exist_ok=True)  # Ensure the output directory exists
 
-        # Install rembg - if not installed
-        try:
-            if importlib.util.find_spec("rembg[gpu]") is None:
-                subprocess.check_call([pybin, "-m", "pip", "install", "rembg[gpu]"])
-        except Exception:
-            print("Unable to install the rembg[gpu] library")
-            return {"CANCELLED"}
-        from rembg import remove
-        from PIL import Image
-        import time
+        new_scene.frame_start = 1
+        new_scene.frame_end = new_strip.frame_final_duration
+        new_scene.render.filepath = output_path
+        new_scene.render.image_settings.file_format = "PNG"
+
+        self.report({"INFO"}, "Saving images to disk.")
+        bpy.ops.render.render(animation=True, scene=new_scene.name)
 
         files = []
-
-        # Remove the background from all images in the image sequence
-        for i in range(int(strip.frame_start), int(strip.frame_final_end) + 1):
-            filepath = "{}{:04d}.png".format(output_path, i)
-            file_name = "{:04d}.png".format(i)
-            msg = str("{:04d}".format(i) + "/" + str(int(strip.frame_final_end)))
+        for i in range(1, new_strip.frame_final_duration + 1):
+            filepath = os.path.join(output_path, f"{i:04d}.png")
+            file_name = f"{i:04d}.png"
+            msg = f"{i}/{new_strip.frame_final_duration}"
             self.report({"INFO"}, msg)
             try:
-                input = Image.open(filepath)
-                output = remove(input)
-                output.save(filepath)
+                with open(filepath, 'rb') as f:
+                    response = requests.post("http://localhost:7000/api/remove", files={'file': f})
+                    response.raise_for_status()  # Check for HTTP errors
+
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+
                 files.append(file_name)
-            except Exception:
-                pass
-        # Close the new scene
-        bpy.ops.scene.delete()
+            except requests.exceptions.RequestException as e:
+                self.report({"WARNING"}, f"Error processing frame {i}: {e}")
 
-        # Add the images with the removed backgrounds as a new image strip in the original scene
-        filepath = "{}{:04d}.png".format(output_path, i)
+        # Delete the temporary scene
+        bpy.data.scenes.remove(new_scene)
+        context.window.scene = original_scene
 
-        image_strip = bpy.context.scene.sequence_editor.sequences.new_image(
-            name="Removed_Background_" + folder_name,
-            filepath=filepath,
+        # Create the new image strip in the original scene
+        image_strip = original_scene.sequence_editor.sequences.new_image(
+            name=f"Removed_Background_{os.path.basename(strip.filepath)}",
+            filepath=os.path.join(output_path, "0001.png"),  # Use the first frame as reference
             channel=strip.channel + 1,
-            frame_start=int(strip.frame_final_start),
+            frame_start=strip.frame_final_start,
         )
-        # Add images of the sequence
         for f in files:
             image_strip.elements.append(f)
-
         image_strip.frame_final_duration = strip.frame_final_duration
+
         bpy.ops.sequencer.refresh_all()
         return {"FINISHED"}
-
 
 def menu_append(self, context):
     layout = self.layout
