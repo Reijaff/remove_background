@@ -33,6 +33,8 @@ class SnapshotRenderInsertOperator(bpy.types.Operator):
         # Temporarily set file format to PNG
         bpy.context.scene.render.image_settings.file_format = "PNG"
 
+        bpy.context.scene.render.film_transparent = True
+
         # Generate random hash for filename
         random_hash = hashlib.sha256(
             str(random.getrandbits(256)).encode("utf-8")
