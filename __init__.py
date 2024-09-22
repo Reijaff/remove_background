@@ -109,7 +109,7 @@ class RemoveBackgroundOperator(bpy.types.Operator):
         try:
             with open(mfilepath, "rb") as f:
                 response = requests.post(
-                    "http://localhost:7000/api/remove", files={"file": f}
+                    "http://localhost:5301/api/remove", files={"file": f}
                 )
                 response.raise_for_status()
 
